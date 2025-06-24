@@ -1,12 +1,18 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, session
+from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 import os
 import toml
 import logging
 import random
-import os, re, time, json, requests, nltk, torch, numpy as np, uuid
-from flask import Flask, render_template, request, jsonify
+import re
+import time
+import json
+import requests
+import nltk
+import torch
+import numpy as np
+import uuid
 from flask_cors import CORS
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from nltk.corpus import stopwords
@@ -16,46 +22,42 @@ from flask_mail import Mail, Message
 from email_validator import validate_email, EmailNotValidError
 from email.utils import parseaddr
 import secrets
-import time
 import calendar
-from datetime import datetime, timedelta
-from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
 from sqlalchemy import func, cast, Date
 from os import environ
 from dotenv import load_dotenv
+
 load_dotenv()
-# ╭─[ A. KONSTANTA ‒ API KEY ]─────────────────────────────────────╮
-API_KEY  = os.getenv("FACTCHECK_API_KEY")
+
+# Konstanta API KEY
+API_KEY = os.getenv("FACTCHECK_API_KEY")
 HF_TOKEN = os.getenv("HF_TOKEN")
-print("[INIT] FACTCHECK_KEY:", bool(API_KEY),
-      "| HF_TOKEN:", bool(HF_TOKEN))
+print("[INIT] FACTCHECK_KEY:", bool(API_KEY), "| HF_TOKEN:", bool(HF_TOKEN))
 
-HF_HEADERS = {"Authorization": f"Bearer {HF_TOKEN}",
-              "Content-Type": "application/json"}
+HF_HEADERS = {
+    "Authorization": f"Bearer {HF_TOKEN}",
+    "Content-Type": "application/json"
+}
 
-# --- 1. KONFIGURASI APLIKASI & DATABASE (VERIFIKASI KONFIGURASI) ---
+# Konfigurasi aplikasi & database
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', 'ganti-dengan-kunci-rahasia-anda-yang-panjang-dan-acak')
 CORS(app)
 
-
 history_db = {}
 
-# --- 3. KONFIGURASI FLASK-MAIL & API KEYS ---
-# Sangat disarankan untuk memindahkan ini ke environment variables
+# Konfigurasi Flask-Mail
 app.config['MAIL_SERVER'] = 'smtp.gmail.com'
 app.config['MAIL_PORT'] = 587
 app.config['MAIL_USE_TLS'] = True
 app.config['MAIL_USERNAME'] = os.environ.get('EMAIL_USER', 'pradiptadeskap@gmail.com')
-app.config['MAIL_PASSWORD'] = os.environ.get('EMAIL_PASS', 'iyij spyh hvln hkka') # Gunakan App Password 16 digit
+app.config['MAIL_PASSWORD'] = os.environ.get('EMAIL_PASS', 'iyij spyh hvln hkka')
 app.config['MAIL_DEFAULT_SENDER'] = ('Verify.ai', app.config['MAIL_USERNAME'])
 
-
-# Inisialisasi Flask-Mail
 mail = Mail(app)
 
-# ╭─[ C. NLTK (DIPERBAIKI) ]───────────────────────────────────────╮
+# NLTK
 try:
     nltk.data.find('corpora/stopwords')
 except LookupError:
@@ -66,37 +68,29 @@ try:
 except LookupError:
     print("[NLTK] Paket 'wordnet' tidak ditemukan. Mengunduh...")
     nltk.download("wordnet")
-    
 stop_words = set(stopwords.words("indonesian"))
 lemmatizer = WordNetLemmatizer()
 
-# ╭─[ D. WEB SCRAPING HELPER ]─────────────────────────────────────╮
-def is_url(text: str) -> bool:
-    """Mendeteksi apakah teks adalah sebuah URL."""
+# Helper scraping
+def is_url(text):
     return text.strip().startswith(('http://', 'https://'))
 
-def scrape_text_from_url(url: str) -> str | None:
-    """Mengambil konten teks utama dari URL."""
+def scrape_text_from_url(url):
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
         response = requests.get(url, timeout=15, headers=headers, allow_redirects=True)
         response.raise_for_status()
-
         soup = BeautifulSoup(response.content, 'html.parser')
         for script_or_style in soup(['script', 'style']):
             script_or_style.decompose()
-
         paragraphs = soup.find_all('p')
         if not paragraphs:
-             return ' '.join(t.strip() for t in soup.stripped_strings)
-
+            return ' '.join(t.strip() for t in soup.stripped_strings)
         article_text = ' '.join(p.get_text(strip=True) for p in paragraphs)
-        
         print(f"[SCRAPE] Berhasil mengambil {len(article_text)} karakter dari {url}")
         return article_text
-
     except requests.RequestException as e:
         print(f"[SCRAPE] Gagal mengambil URL: {e}")
         return None
@@ -104,8 +98,7 @@ def scrape_text_from_url(url: str) -> str | None:
         print(f"[SCRAPE] Gagal mem-parsing URL: {e}")
         return None
 
-
-# ╭─[ E. PRE-PROCESS ]────────────────────────────────────────────╮
+# Preprocess text
 EXTRANEOUS_REGEX = re.compile(
     "|".join([
         r"=+\s*\[?\s*(?:kategori|category|penjelasan|referensi)[^\n]*",
@@ -119,7 +112,7 @@ EXTRANEOUS_REGEX = re.compile(
     flags=re.IGNORECASE
 )
 
-def clean_text(t: str) -> str:
+def clean_text(t):
     t = EXTRANEOUS_REGEX.sub(" ", t.lower())
     t = re.sub(r"http\S+", " ", t)
     t = re.sub(r"(kompas\.com|turnbackhoax\.id)", " ", t)
@@ -127,73 +120,59 @@ def clean_text(t: str) -> str:
     t = re.sub(r"\d+", " ", t)
     return re.sub(r"\s+", " ", t).strip()
 
-def preprocess_text(t: str) -> str:
-    return " ".join(lemmatizer.lemmatize(w)
-                    for w in t.split() if w not in stop_words)
+def preprocess_text(t):
+    return " ".join(lemmatizer.lemmatize(w) for w in t.split() if w not in stop_words)
 
-# ╭─[ E-2. WORD ERROR RATE (FITUR BARU) ]──────────────────────────╮
-def calculate_wer(reference: str, hypothesis: str) -> float:
-    """
-    Menghitung Word Error Rate (WER) antara teks referensi dan hipotesis.
-    WER = (Substitutions + Deletions + Insertions) / Number of Words in Reference
-    """
+def calculate_wer(reference, hypothesis):
     ref_words = reference.split()
     hyp_words = hypothesis.split()
-    
     d = np.zeros((len(ref_words) + 1, len(hyp_words) + 1), dtype=np.int32)
-    
     for i in range(len(ref_words) + 1):
         d[i, 0] = i
     for j in range(len(hyp_words) + 1):
         d[0, j] = j
-        
     for i in range(1, len(ref_words) + 1):
         for j in range(1, len(hyp_words) + 1):
             cost = 0 if ref_words[i-1] == hyp_words[j-1] else 1
-            d[i, j] = min(d[i-1, j] + 1,          # Deletion
-                        d[i, j-1] + 1,          # Insertion
-                        d[i-1, j-1] + cost) # Substitution
-                        
+            d[i, j] = min(
+                d[i-1, j] + 1,
+                d[i, j-1] + 1,
+                d[i-1, j-1] + cost
+            )
     n_words = len(ref_words)
     if n_words == 0:
         return float(len(hyp_words) > 0)
-    wer = d[len(ref_words), len(hyp_words)] / n_words
+    wer = d[len(ref_words), len(hyp_words)] / float(n_words)
     print(f"[WER] Dihitung: {wer:.4f}")
     return wer
 
-
-# ╭─[ F. MODEL ]───────────────────────────────────────────────────╮
+# Model
 MODEL_DIR = "idbert"
-# --- PERUBAHAN DI SINI ---
 print(f"[MODEL] Mengunduh atau memuat model '{MODEL_DIR}' dari cache...")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR, local_files_only=False)
-model     = AutoModelForSequenceClassification.from_pretrained(
-            MODEL_DIR, local_files_only=False)
-# --- AKHIR PERUBAHAN ---
-device    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model.to(device); model.eval()
+model = AutoModelForSequenceClassification.from_pretrained(MODEL_DIR, local_files_only=False)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device)
+model.eval()
 print("[MODEL] Model berhasil dimuat.")
-device    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model.to(device); model.eval()
 
-@torch.inference_mode()
-def predict_one(text: str):
+@torch.no_grad()
+def predict_one(text):
     t = preprocess_text(clean_text(text))
-    inp = tokenizer(t, truncation=True, padding="max_length",
-                    max_length=128, return_tensors="pt").to(device)
+    inp = tokenizer(t, truncation=True, padding="max_length", max_length=128, return_tensors="pt").to(device)
     logits = model(**inp).logits
-    probs  = torch.softmax(logits, -1).cpu().numpy()[0]
-    return ("HOAX" if probs.argmax() else "FAKTA", float(probs[1]))
+    probs = torch.softmax(logits, -1).cpu().numpy()[0]
+    return ("HOAX" if np.argmax(probs) else "FAKTA", float(probs[1]))
 
-# ╭─[ G. FACT-CHECK helper ]──────────────────────────────────────╮
-def _extract_query(txt: str) -> str:
+def _extract_query(txt):
     sent = re.split(r"[.!?\n]", txt, 1)[0][:250]
     return f"\"{sent}\"" if len(sent.split()) > 6 else sent
 
-def check_fact_claims(txt: str):
-    if not API_KEY: return []
+def check_fact_claims(txt):
+    if not API_KEY:
+        return []
     query = _extract_query(txt)
-    url   = ("https://factchecktools.googleapis.com/v1alpha1/claims:search"
+    url = ("https://factchecktools.googleapis.com/v1alpha1/claims:search"
            f"?query={requests.utils.quote(query)}"
            "&languageCode=id,en&pageSize=6"
            f"&key={API_KEY}")
@@ -205,13 +184,14 @@ def check_fact_claims(txt: str):
         claims = []
         for c in data.get("claims", []):
             rev = c.get("claimReview", [])
-            if not rev: continue
+            if not rev:
+                continue
             first = rev[0]
             claims.append({
-                "text"      : c.get("text", "")[:200],
-                "publisher" : first.get("publisher", {}).get("name", ""),
-                "rating"    : first.get("textualRating", ""),
-                "url"       : first.get("url", "")
+                "text": c.get("text", "")[:200],
+                "publisher": first.get("publisher", {}).get("name", ""),
+                "rating": first.get("textualRating", ""),
+                "url": first.get("url", "")
             })
         print("[FACT] ditemukan:", len(claims))
         return claims
@@ -219,7 +199,6 @@ def check_fact_claims(txt: str):
         print("FactCheck error:", e)
         return []
 
-# ╭─[ H. LLM helper (IMPROVED) ]──────────────────────────────────╮
 def explain_simple(label, facts):
     base = (f"Berdasarkan analisis AI, teks ini terindikasi "
             f"{'sebagai HOAX' if label=='HOAX' else 'sebagai FAKTA'}.")
@@ -232,11 +211,9 @@ def explain_simple(label, facts):
 def explain_hf(label, facts, text):
     if not HF_TOKEN:
         return explain_simple(label, facts)
-
     context = ("Berikut adalah beberapa klaim terkait yang ditemukan dari Google Fact-Check:\n" +
                "\n".join(f"- \"{f['text']}\" (Rating: {f['rating']} oleh {f['publisher']})" for f in facts[:3])
                if facts else "Tidak ada referensi fact-check eksternal yang ditemukan.")
-
     prompt = (
         "Anda adalah asisten AI analitis yang bertugas memberikan penjelasan mengenai hasil deteksi hoaks.\n\n"
         "== KONTEKS YANG DIBERIKAN ==\n"
@@ -247,56 +224,46 @@ def explain_hf(label, facts, text):
         "HANYA berdasarkan konteks di atas, berikan penjelasan dalam Bahasa Indonesia yang jelas dalam 2-4 kalimat. Jelaskan mengapa teks tersebut kemungkinan dilabeli demikian, kaitkan dengan referensi jika ada. Akhiri dengan saran singkat yang netral untuk pengguna.\n\n"
         "Penjelasan Anda:"
     )
-
     models = ["HuggingFaceH4/zephyr-7b-beta", "google/flan-t5-large"]
-
     for m in models:
         try:
             url = f"https://api-inference.huggingface.co/models/{m}"
             res = requests.post(
                 url, headers=HF_HEADERS,
                 json={"inputs": prompt,
-                      "parameters": {"max_new_tokens": 512, 
-                                      "temperature": 0.7,
-                                      "return_full_text": False }},
+                      "parameters": {"max_new_tokens": 512, "temperature": 0.7, "return_full_text": False}},
                 timeout=30)
             print("[HF ]", m, res.status_code)
-            if res.status_code == 503: time.sleep(2); continue
-            if res.status_code != 200: continue
-            
+            if res.status_code == 503:
+                time.sleep(2)
+                continue
+            if res.status_code != 200:
+                continue
             js = res.json()
             if isinstance(js, list) and js and "generated_text" in js[0]:
                 return js[0]["generated_text"].strip()
             if isinstance(js, dict) and "generated_text" in js:
-                 return js["generated_text"].strip()
-
+                return js["generated_text"].strip()
         except Exception as e:
             print("HF err:", e)
             continue
-
     return explain_simple(label, facts)
 
-
-# Muat konfigurasi dari file toml
+# Load config
 try:
     config = toml.load('config.toml')
     db_config = config['database']
     db_uri = f"mysql+pymysql://{db_config['user']}:{db_config['password']}@{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
     app.config['SQLALCHEMY_DATABASE_URI'] = db_uri
-    logging.debug(f"Database URI: {db_uri}")  # Debug log to check connection
+    logging.debug(f"Database URI: {db_uri}")
 except (FileNotFoundError, KeyError) as e:
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///fallback.db'
     logging.error(f"Error memuat konfigurasi database dari config.toml: {e}")
 
-
-# Menonaktifkan pelacakan perubahan objek yang tidak perlu
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
-# Inisialisasi Database
 db = SQLAlchemy(app)
 
-
-
+# Models (tidak diubah, sudah compatible)
 
 
 # --- Menambahkan Kelas User ---

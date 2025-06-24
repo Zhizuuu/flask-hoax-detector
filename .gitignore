@@ -39,3 +39,4 @@ node_modules/
 # File sementara/deploy
 *.bak
 *.log
+appbackup.py
