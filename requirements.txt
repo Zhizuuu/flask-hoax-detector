@@ -11,3 +11,4 @@ beautifulsoup4>=4.10
 email-validator>=1.2.1
 PyMySQL>=1.0
 toml>=0.10.2
+gunicorn
